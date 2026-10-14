@@ -2659,3 +2659,84 @@ QUnit.test( "Make sure col element is appended correctly", function( assert ) {
 
 	assert.strictEqual( table.find( "td" ).width(), 150 );
 } );
+
+QUnit.test( "<option> and <optgroup> are not wrapped in <select> outside of IE 9 (gh-4647)", function( assert ) {
+
+	// Support: IE9
+	// IE9 replaces <option> tags with their contents when inserted outside of
+	// the select element so the <select> wrapper is still required there.
+	if ( /msie 9\.0/i.test( window.navigator.userAgent ) ) {
+		assert.expect( 1 );
+		assert.ok( true, "IE 9 still requires the <select> wrapper" );
+		return;
+	}
+
+	assert.expect( 16 );
+
+	jQuery.each( [ "option", "optgroup" ], function( index, tag ) {
+
+		// A <select> wrapper would swallow the leading element and leave only
+		// the contents of the trailing one (gh-4647).
+		var html = "<" + tag + ">a</" + tag + "></select><b>b</b>",
+			elems = jQuery( html ),
+			parsed = jQuery.parseHTML( html ),
+			viaHtml = jQuery( "<div></div>" ).appendTo( "#qunit-fixture" ).html( html ),
+			viaAppend = jQuery( "<div></div>" ).appendTo( "#qunit-fixture" ).append( html );
+
+		assert.equal( elems.length, 2, tag + ": jQuery( html ) keeps both top-level nodes" );
+		assert.ok( elems.first().is( tag ),
+			tag + ": jQuery( html ) creates the <" + tag + "> element" );
+
+		assert.equal( parsed.length, 2, tag + ": jQuery.parseHTML keeps both top-level nodes" );
+		assert.ok( jQuery( parsed ).first().is( tag ),
+			tag + ": jQuery.parseHTML creates the <" + tag + "> element" );
+
+		assert.equal( viaHtml.children().length, 2, tag + ": .html() keeps both elements" );
+		assert.ok( viaHtml.children().first().is( tag ),
+			tag + ": .html() creates the <" + tag + "> element" );
+
+		assert.equal( viaAppend.children().length, 2, tag + ": .append() keeps both elements" );
+		assert.ok( viaAppend.children().first().is( tag ),
+			tag + ": .append() creates the <" + tag + "> element" );
+	} );
+} );
+
+QUnit.test( "Sanitized HTML with <option> doesn't get unsanitized (gh-4647)", function( assert ) {
+
+	var done,
+		container = jQuery( "<div></div>" ).appendTo( "#qunit-fixture" ),
+		payload = "<option><style></option></select><img src=url404 onerror=xss(0)></style>";
+
+	// Support: IE9
+	// IE9 still needs the <select> wrapper for <option>.
+	if ( /msie 9\.0/i.test( window.navigator.userAgent ) ) {
+		assert.expect( 1 );
+		assert.ok( true, "IE 9 still requires the <select> wrapper" );
+		return;
+	}
+
+	assert.expect( 8 );
+
+	done = assert.async();
+
+	Globals.register( "xss" );
+	window.xss = sinon.spy();
+
+	jQuery( "<div></div>" ).appendTo( container ).html( payload );
+	jQuery( "<div></div>" ).appendTo( container ).append( payload );
+	jQuery( payload ).appendTo( jQuery( "<div></div>" ).appendTo( container ) );
+
+	assert.equal( container.find( "img" ).length, 0, "No <img> element was created" );
+	container.children().each( function( i ) {
+		assert.ok( /onerror=xss/.test( jQuery( this ).find( "style" ).text() ),
+			"Payload #" + i + " stayed inert inside the <style> element" );
+		assert.ok( jQuery( this ).children().first().is( "option" ),
+			"Payload #" + i + " kept the <option> element" );
+	} );
+
+	// Give a possible error handler of an unsanitized image a chance to run
+	setTimeout( function() {
+		assert.equal( window.xss.callCount, 0, "Insecure code wasn't executed" );
+		done();
+	}, 1000 );
+} );

@@ -1,0 +1,123 @@
+name: seal-build
+
+# Build-and-pack only. The test suites (npm test on Node 0.10/0.12/4/5 and the
+# browser QUnit suite in headless Chrome) run on Travis via .travis.yml.
+on:
+  workflow_dispatch:
+
+jobs:
+  build-pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # jQuery 2.2.x is published from the separate jquery-dist repo
+      # (build/release/dist.js), not by `npm pack` of this repo. The 2.2.2
+      # release commit was made on top of jquery-dist's "Release 1.12.2"
+      # commit, which supplies the files dist.js does not overwrite.
+      - name: Fetch jquery-dist base tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/jquery/jquery-dist.git "$RUNNER_TEMP/jqdist"
+          git -C "$RUNNER_TEMP/jqdist" checkout a9b5f8ac96f6aa7bfc7b0795cb16d65c4f15b64e
+          git -C "$RUNNER_TEMP/jqdist" log -1 --format='%H %s'
+          rm -rf "$RUNNER_TEMP/jqdist/.git"
+          ls -la "$RUNNER_TEMP/jqdist"
+
+      # The publisher used Node 5.8.0 / npm 3.7.3. The node:5.8.0 Docker Hub
+      # tag is a schema-1 manifest that current Docker refuses to pull, so the
+      # official 5.8.0 binary is mounted into the node:5 image instead.
+      - name: Fetch Node 5.8.0 (npm 3.7.3)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -sSfLO https://nodejs.org/dist/v5.8.0/node-v5.8.0-linux-x64.tar.xz
+          curl -sSfL https://nodejs.org/dist/v5.8.0/SHASUMS256.txt -o SHASUMS256.txt
+          grep " node-v5.8.0-linux-x64.tar.xz$" SHASUMS256.txt | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/node5"
+          tar -xJf node-v5.8.0-linux-x64.tar.xz -C "$RUNNER_TEMP/node5" --strip-components=1
+
+      - name: Write container build script
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/seal" "$RUNNER_TEMP/out"
+          cat > "$RUNNER_TEMP/seal/build.sh" <<'SEAL_BUILD_EOF'
+          set -euo pipefail
+          export PATH="/opt/node/bin:$PATH"
+          mkdir -p "$HOME"
+          node --version
+          npm --version
+          npm config set registry "https://:2016-03-17T17%3A52%3A26.967Z@time-machines-npm.sealsecurity.io/"
+          npm config set fetch-retries 5
+          # build.js appends $COMMIT to the embedded version string
+          unset COMMIT
+          # Pin the "Date: @DATE" header to the 2.2.2 release value. This is a
+          # workflow-time edit on purpose: edits under build/ do not survive
+          # into the version patch.
+          sed -i 's|( new Date() ).toISOString().replace( /:\\d+\\.\\d+Z$/, "Z" )|"2016-03-17T17:51Z"|' build/tasks/build.js
+          if grep -q "new Date()" build/tasks/build.js; then
+            echo "ERROR: @DATE pin did not apply to build/tasks/build.js"
+            exit 1
+          fi
+          if ! grep -q '"2016-03-17T17:51Z"' build/tasks/build.js; then
+            echo "ERROR: @DATE pin missing from build/tasks/build.js"
+            exit 1
+          fi
+          # babel-core 5 -> line-numbers@0.2.0 pins left-pad@0.0.3 exactly. That
+          # version was unpublished and republished on 2016-03-22 (the left-pad
+          # incident), so the time machine hides it. Seed that one package from
+          # the live registry; npm install then reuses it.
+          npm install --registry=https://registry.npmjs.org/ left-pad@0.0.3
+          npm install
+          # Regenerate dist/jquery.js, jquery.min.js, jquery.min.map from src/
+          # (= grunt "dev": build, lint, uglify, remove_map_comment, dist).
+          # Tests run on Travis, not here.
+          ./node_modules/.bin/grunt dev
+          ls -la dist
+          grep -q "Date: 2016-03-17T17:51Z" dist/jquery.js
+
+          # Replay build/release/dist.js copy() into the jquery-dist tree.
+          cd /jqdist
+          mkdir -p dist
+          cp -f /work/dist/jquery.js /work/dist/jquery.min.js /work/dist/jquery.min.map dist/
+          cp -rf /work/src /work/external/sizzle /work/LICENSE.txt /work/AUTHORS.txt /work/package.json .
+          # generateBower(): JSON.stringify(..., null, 2), no trailing newline
+          node -e 'var fs = require("fs"), pkg = require("/jqdist/package.json"); fs.writeFileSync("/jqdist/bower.json", JSON.stringify({ name: pkg.name, main: pkg.main, license: "MIT", ignore: [ "package.json" ], keywords: pkg.keywords }, null, 2));'
+          npm pack
+          mv jquery-2.2.2.tgz /out/
+          tar tzf /out/jquery-2.2.2.tgz | sort
+          echo "member count: $(tar tzf /out/jquery-2.2.2.tgz | wc -l)"
+          SEAL_BUILD_EOF
+          chmod +x "$RUNNER_TEMP/seal/build.sh"
+
+      - name: Build dist and pack (node 5.8.0 / npm 3.7.3)
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp/home \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -v "$RUNNER_TEMP/jqdist:/jqdist" \
+            -v "$RUNNER_TEMP/out:/out" \
+            -v "$RUNNER_TEMP/seal:/seal:ro" \
+            -v "$RUNNER_TEMP/node5:/opt/node:ro" \
+            -w /work \
+            node:5 bash /seal/build.sh
+          if [ ! -f "$RUNNER_TEMP/out/jquery-2.2.2.tgz" ]; then
+            echo "ERROR: jquery-2.2.2.tgz was not produced"
+            exit 1
+          fi
+          ls -la "$RUNNER_TEMP/out"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jquery-2.2.2
+          path: ${{ runner.temp }}/out/jquery-2.2.2.tgz
+          if-no-files-found: error

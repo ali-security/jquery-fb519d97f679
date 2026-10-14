@@ -1,7 +1,125 @@
 language: node_js
 sudo: false
-node_js:
-- "0.10"
-- "0.12"
-- "4"
-- "5"
+
+# Every leg is listed explicitly under jobs.include (a top-level node_js list
+# combined with jobs.include collapses to a single job).
+#
+# All legs install from the npm registry time machine pinned to the 2.2.2
+# release date. babel-core 5 -> line-numbers@0.2.0 pins left-pad@0.0.3, which
+# was unpublished/republished on 2016-03-22 (the left-pad incident) and is
+# therefore hidden by the time machine; that one exact version is seeded from
+# the live registry first and `npm install` reuses it.
+#
+# Node 0.x: jsdom 5.6.1 cannot load, so the Gruntfile's runJsdomTests is false
+# and test_fast is EMPTY (zero tests). Upstream's remedy is `grunt old_jsdom`
+# (npm install jsdom@3), whose contextify addon needs node-gyp 3 -> Python 2,
+# which the Ubuntu 24.04 build image no longer ships; build it from source.
+jobs:
+  include:
+    - name: "Node 0.10: npm test (grunt && grunt test)"
+      node_js: "0.10"
+      before_install:
+        - curl -sSfL https://www.python.org/ftp/python/2.7.18/Python-2.7.18.tgz -o /tmp/Python-2.7.18.tgz
+        - echo "da3080e3b488f648a3d7a4560ddee895284c3380b11d6de75edb986526b9a814  /tmp/Python-2.7.18.tgz" | sha256sum -c -
+        - tar -xzf /tmp/Python-2.7.18.tgz -C /tmp
+        - >-
+          ( cd /tmp/Python-2.7.18 && ./configure --prefix="$HOME/py27" > /tmp/py27.log 2>&1
+          && make -j"$(nproc)" >> /tmp/py27.log 2>&1 && make install >> /tmp/py27.log 2>&1 )
+          || { tail -n 80 /tmp/py27.log; false; }
+        - $HOME/py27/bin/python --version
+        - npm config set python "$HOME/py27/bin/python"
+        - npm config set registry "https://:2016-03-17T17%3A52%3A26.967Z@time-machines-npm.sealsecurity.io/"
+        - npm install --registry=https://registry.npmjs.org/ left-pad@0.0.3
+      install:
+        - npm install
+      before_script:
+        - ./node_modules/.bin/grunt old_jsdom
+        - >-
+          node -e 'require( "jsdom" ); console.log( "jsdom " + require( "jsdom/package.json" ).version + " loads: node smoke tests will run" )'
+      script:
+        - npm test
+
+    - name: "Node 0.12: npm test (grunt && grunt test)"
+      node_js: "0.12"
+      before_install:
+        - curl -sSfL https://www.python.org/ftp/python/2.7.18/Python-2.7.18.tgz -o /tmp/Python-2.7.18.tgz
+        - echo "da3080e3b488f648a3d7a4560ddee895284c3380b11d6de75edb986526b9a814  /tmp/Python-2.7.18.tgz" | sha256sum -c -
+        - tar -xzf /tmp/Python-2.7.18.tgz -C /tmp
+        - >-
+          ( cd /tmp/Python-2.7.18 && ./configure --prefix="$HOME/py27" > /tmp/py27.log 2>&1
+          && make -j"$(nproc)" >> /tmp/py27.log 2>&1 && make install >> /tmp/py27.log 2>&1 )
+          || { tail -n 80 /tmp/py27.log; false; }
+        - $HOME/py27/bin/python --version
+        - npm config set python "$HOME/py27/bin/python"
+        - npm config set registry "https://:2016-03-17T17%3A52%3A26.967Z@time-machines-npm.sealsecurity.io/"
+        - npm install --registry=https://registry.npmjs.org/ left-pad@0.0.3
+      install:
+        - npm install
+      before_script:
+        - ./node_modules/.bin/grunt old_jsdom
+        - >-
+          node -e 'require( "jsdom" ); console.log( "jsdom " + require( "jsdom/package.json" ).version + " loads: node smoke tests will run" )'
+      script:
+        - npm test
+
+    - name: "Node 4: npm test (grunt && grunt test)"
+      node_js: "4"
+      before_install:
+        - npm config set registry "https://:2016-03-17T17%3A52%3A26.967Z@time-machines-npm.sealsecurity.io/"
+        - npm install --registry=https://registry.npmjs.org/ left-pad@0.0.3
+      install:
+        - npm install
+      script:
+        - npm test
+
+    - name: "Node 5: npm test (grunt && grunt test)"
+      node_js: "5"
+      before_install:
+        - npm config set registry "https://:2016-03-17T17%3A52%3A26.967Z@time-machines-npm.sealsecurity.io/"
+        - npm install --registry=https://registry.npmjs.org/ left-pad@0.0.3
+      install:
+        - npm install
+      script:
+        - npm test
+
+    # The real unit suite (test/index.html, test/unit/*.js) is browser-only
+    # QUnit; upstream ran it on TestSwarm, one page per module
+    # (build/tasks/testswarm.js: test/index.html?module=<name>). Run the same
+    # per-module pages in headless Chrome, against dist/jquery.js (?dev)
+    # rebuilt from src/ by grunt on Node 5. The ajax fixtures need PHP.
+    - name: "QUnit browser suite (headless Chrome, per module)"
+      node_js: "20"
+      addons:
+        chrome: stable
+      install:
+        - nvm install 5 && nvm use 5
+        - node --version && npm --version
+        - npm config set registry "https://:2016-03-17T17%3A52%3A26.967Z@time-machines-npm.sealsecurity.io/"
+        - npm install --registry=https://registry.npmjs.org/ left-pad@0.0.3
+        - npm install
+        - ./node_modules/.bin/grunt
+        - nvm use 20
+        - node --version
+        # Test driver only: separate tree, current puppeteer-core from the live registry.
+        - mkdir -p /tmp/driver
+        - ( cd /tmp/driver && npm init -y > /dev/null && npm install --registry=https://registry.npmjs.org/ puppeteer-core )
+        - google-chrome --version
+        - php --version
+      before_script:
+        # Several workers are load-bearing: a single-process php -S serializes
+        # requests and starves the fixture iframes the suite opens.
+        - PHP_CLI_SERVER_WORKERS=10 php -S 127.0.0.1:8000 -t . > /tmp/php.log 2>&1 &
+        - for i in $(seq 1 30); do curl -sf -o /dev/null http://127.0.0.1:8000/test/index.html && break; sleep 1; done
+        - curl -sf -o /dev/null http://127.0.0.1:8000/test/data/name.php
+      script:
+        # Exclusion (environment-dependent, not a jQuery behavior):
+        # "ajax: #14379 - jQuery.ajax() on unload" sends a synchronous XHR from
+        # a window unload handler; Chrome forbids sync XHR during page
+        # dismissal (since ~v80), so the request always ends in "error".
+        - >-
+          SEAL_SKIP_TESTS="ajax: #14379 - jQuery.ajax() on unload"
+          CHROME_PATH="$(command -v google-chrome)"
+          NODE_PATH=/tmp/driver/node_modules
+          node test/seal-browser-runner.js "http://127.0.0.1:8000/test/index.html?dev"
+          ready basic core callbacks deferred deprecated support data queue attributes
+          event selector traversing manipulation wrap css serialize ajax effects offset dimensions

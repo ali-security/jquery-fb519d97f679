@@ -1522,6 +1522,31 @@ QUnit.test("jQuery.parseHTML", function( assert ) {
 	assert.ok( jQuery.parseHTML("<#if><tr><p>This is a test.</p></tr><#/if>") || true, "Garbage input should not cause error" );
 });
 
+QUnit.test( "jQuery.parseHTML(<a href>) - gh-2965", function( assert ) {
+	assert.expect( 1 );
+
+	var html = "<a href='test.html'></a>",
+		href = jQuery.parseHTML( html )[ 0 ].href;
+
+	assert.ok( /\/test\.html$/.test( href ), "href is not lost after parsing anchor" );
+} );
+
+if ( jQuery.support.createHTMLDocument && !/opera.*version\/12\.1/i.test( navigator.userAgent ) ) {
+	QUnit.asyncTest( "jQuery.parseHTML", function( assert ) {
+		assert.expect( 1 );
+
+		Globals.register( "parseHTMLError" );
+
+		jQuery.globalEval( "parseHTMLError = false;" );
+		jQuery.parseHTML( "<img src=x onerror='parseHTMLError = true'>" );
+
+		window.setTimeout( function() {
+			QUnit.start();
+			assert.equal( window.parseHTMLError, false, "onerror eventhandler has not been called." );
+		}, 2000 );
+	} );
+}
+
 QUnit.test( "jQuery.parseJSON", function( assert ) {
 	assert.expect( 20 );
 
